@@ -8,6 +8,7 @@ require('global-agent/bootstrap');
 
 const got = require('got').extend({
     maxRedirects: 0,
+    rejectUnauthorized: false,
     timeout: 20 * 1000, // 20s
     headers: {
         'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.149 Safari/537.36',
@@ -16,7 +17,7 @@ const got = require('got').extend({
 
 const cache = new LRU({
     max: 400, // 400 items
-    maxAge: 1000 * 60 * 60, // 60 minutes
+    ttl: 1000 * 60 * 60, // 60 minutes
 });
 
 const isAlphaNum = function(c) {
@@ -160,7 +161,7 @@ const reverseProxyFetch = async function(url, host, options) {
         }
     }
 
-    // improved caching
+    // improved caching - only static files
     const reStaticFile = /\.(?:jpg|jpeg|gif|png|ico|cur|gz|svg|svgz|mp4|ogg|ogv|webm|htc|css|js)(\?|$)/;
     if ((options.method === 'GET' && response.statusCode !== 200)
         || reStaticFile.test(url)
@@ -175,7 +176,7 @@ const reverseProxyFetch = async function(url, host, options) {
 
 const app = express();
 const port = 8191;
-const currentHost = `localhost:${port}`;
+const currentHost = `localhost:${port}`; // REPLACE THIS
 
 app.use(bodyParser.raw({ type: '*/*' }));
 app.use(morgan('common'));
@@ -183,7 +184,7 @@ app.use(morgan('common'));
 // /:host/* route and replace output
 app.all('/*', async function (req, res) {
     const { '0': path } = req.params;
-    const host = 'example.com:443';
+    const host = 'example.com:443'; // REPLACE THIS
 
     let query = '';
     const queryPos = req.originalUrl.indexOf('?');
@@ -226,7 +227,8 @@ app.all('/*', async function (req, res) {
     const pathSlug = toSlug(path).slice(0, 60);
     const logName = `${date}_${pathSlug}.log`;
 
-    fs.promises.writeFile('logs/' + logName, response.rawOutput);
+    fs.promises.writeFile('logs/' + logName, response.rawOutput)
+        .catch(err => console.error(err));
 });
 
 app.listen(port, () => console.log(`Listening at http://${currentHost}/`));
