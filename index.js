@@ -7,17 +7,20 @@ const morgan = require('morgan');
 require('global-agent/bootstrap');
 
 const got = require('got').extend({
+    https: {
+        rejectUnauthorized: false,
+    },
     maxRedirects: 0,
-    rejectUnauthorized: false,
     timeout: 20 * 1000, // 20s
     headers: {
-        'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.149 Safari/537.36',
+        'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/99.0.4844.83 Safari/537.36',
     },
 });
 
+const cacheTimeSeconds = 60 * 60; // 60min
 const cache = new LRU({
     max: 400, // 400 items
-    ttl: 1000 * 60 * 60, // 60 minutes
+    ttl: cacheTimeSeconds * 1000,
 });
 
 const isAlphaNum = function(c) {
@@ -29,7 +32,7 @@ const isAlphaNum = function(c) {
 };
 
 const numToHex = function(num) {
-    return ('0'+num.toString(16)).slice(-2);
+    return ('0' + num.toString(16)).slice(-2);
 };
 
 const encodeAllURI = function(s) {
@@ -125,14 +128,14 @@ const fetch = async function(options) {
 const reverseProxyFetch = async function(url, host, options) {
     if (cache.has(url) && !url.includes('skipcache')) {
         const response = cache.get(url);
-        response.headers['X-Cache-Status'] = 'HIT';
+        response.headers['X-Cache-Status'] = 'HIT'; // replace MISS from cache
 
         return response;
     }
 
     const response = await fetch({ ...options, url });
 
-    // improve body
+    // improve body - replace any references to the new host
     const parts = ['https://', 'http://', '//', ''];
     for (let part of parts) {
         const rePart = new RegExp(`${part}${host}`, 'g');
@@ -144,9 +147,11 @@ const reverseProxyFetch = async function(url, host, options) {
     }
 
     // improve headers
-    const headersBlacklist = ['content-encoding', 'connection',
+    const headersBlacklist = [
+        'content-encoding', 'connection',
         'transfer-encoding', 'content-length',
-        'cache-control', 'expires', 'etag'];
+        'cache-control', 'expires', 'etag',
+    ];
     for (const k of headersBlacklist) {
         if (k in response.headers) {
             delete response.headers[k];
@@ -162,11 +167,12 @@ const reverseProxyFetch = async function(url, host, options) {
     }
 
     // improved caching - only static files
-    const reStaticFile = /\.(?:jpg|jpeg|gif|png|ico|cur|gz|svg|svgz|mp4|ogg|ogv|webm|htc|css|js)(\?|$)/;
-    if ((options.method === 'GET' && response.statusCode !== 200)
-        || reStaticFile.test(url)
+    const reStaticFile = /\.(?:jpg|jpeg|gif|png|ico|cur|gz|svg|svgz|mp4|ogg|ogv|webm|htc|css|js|map)(\?|$)/;
+    const cacheableStatusCode = [404];
+    if ((options.method === 'GET' && reStaticFile.test(url))
+        || cacheableStatusCode.includes(response.statusCode)
     ) {
-        response.headers['Cache-Control'] = `max-age=${60*60}`;
+        response.headers['Cache-Control'] = `public, max-age=${cacheTimeSeconds}`;
         response.headers['X-Cache-Status'] = 'MISS';
         cache.set(url, response);
     }
@@ -181,7 +187,7 @@ const currentHost = `localhost:${port}`; // REPLACE THIS
 app.use(bodyParser.raw({ type: '*/*' }));
 app.use(morgan('common'));
 
-// /:host/* route and replace output
+// TODO: maybe use /:host/* route and replace output
 app.all('/*', async function (req, res) {
     const { '0': path } = req.params;
     const host = 'example.com:443'; // REPLACE THIS
@@ -202,8 +208,10 @@ app.all('/*', async function (req, res) {
     };
 
     // improve headers
-    const headersBlacklist = ['if-none-match', 'if-modified-since',
-        'host', 'content-length'];
+    const headersBlacklist = [
+        'if-none-match', 'if-modified-since',
+        'host', 'content-length',
+    ];
     for (const k of headersBlacklist) {
         if (k in options.headers) {
             delete options.headers[k];
@@ -227,7 +235,7 @@ app.all('/*', async function (req, res) {
     const pathSlug = toSlug(path).slice(0, 60);
     const logName = `${date}_${pathSlug}.log`;
 
-    fs.promises.writeFile('logs/' + logName, response.rawOutput)
+    fs.promises.writeFile('./logs/' + logName, response.rawOutput)
         .catch(err => console.error(err));
 });
 

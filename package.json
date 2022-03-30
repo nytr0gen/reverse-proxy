@@ -8,5 +8,12 @@
         "lru-cache": "^7.7.1",
         "moment": "^2.24.0",
         "morgan": "^1.10.0"
+    },
+    "devDependencies": {
+        "nodemon": "^2.0.15"
+    },
+    "scripts": {
+        "start": "node index.js",
+        "watch": "nodemon -x 'node index.js || touch index.js'"
     }
 }
