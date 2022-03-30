@@ -1,9 +1,10 @@
 const express = require('express');
-const LRU = require('lru-cache');
-const bodyParser = require('body-parser');
-const moment = require('moment');
 const fs = require('fs');
+const LRU = require('lru-cache');
+const moment = require('moment');
 const morgan = require('morgan');
+const { parse: urlparse } = require('url');
+const { program } = require('commander');
 require('global-agent/bootstrap');
 
 const got = require('got').extend({
@@ -80,14 +81,14 @@ const getRawOutput = function(response, body) {
     let sent = response.req._header.trim().replace(/\n/g, '\n> ');
     sent = `> ${sent}\r\n>\r\n`;
     if (body) {
-        sent += body + "\r\n";
+        sent += body + '\r\n';
     }
 
     let recv = `< HTTP/${response.httpVersion} ${response.statusCode} ${response.statusMessage}\r\n`;
     for (let i = 0; i < response.rawHeaders.length; i += 2) {
         recv += `< ${response.rawHeaders[i]}: ${response.rawHeaders[i+1]}\r\n`;
     }
-    recv += "<\r\n";
+    recv += '<\r\n';
     if (response.body) {
         recv += response.body;
     }
@@ -180,17 +181,53 @@ const reverseProxyFetch = async function(url, host, options) {
     return response;
 };
 
-const app = express();
-const port = 8191;
-const currentHost = `localhost:${port}`; // REPLACE THIS
+/**
+ * Main App
+ */
+program
+    .argument('<target>', 'target host + port http://example.com:80/')
+    .option('-p, --port [port]', 'port number', '8191')
+    .option('-h, --host [host]', 'local host', '127.0.0.1')
+    .option('--logs', 'log every request inside ./logs')
+    .action((target, opts) => {
+        global.port = parseInt(opts.port, 10);
+        global.currentHost = `${opts.host}:${port}`;
+        global.isLoggingEnabled = !!opts.logs;
 
-app.use(bodyParser.raw({ type: '*/*' }));
+        const targetURL = urlparse(target);
+        global.targetHost = targetURL.host;
+        global.targetProto = targetURL.protocol;
+        if (!targetHost || !targetProto) {
+            throw new Error('invalid host or protocol');
+        }
+    });
+
+program.parse();
+
+const app = express();
+app.disable('x-powered-by');
+
+// catch all data
+app.use(function(req, res, next) {
+    req.rawBody = '';
+    req.setEncoding('utf8');
+
+    req.on('data', function(chunk) {
+        req.rawBody += chunk;
+    });
+
+    req.on('end', function() {
+        next();
+    });
+});
 app.use(morgan('common'));
 
-// TODO: maybe use /:host/* route and replace output
-app.all('/*', async function (req, res) {
-    const { '0': path } = req.params;
-    const host = 'example.com:443'; // REPLACE THIS
+// TODO: maybe use /:host/:path(*) route and replace output
+app.all(':path(*)', async function (req, res) {
+    const { path } = req.params;
+    if (!path.startsWith('/')) {
+        path = '/' + path;
+    }
 
     let query = '';
     const queryPos = req.originalUrl.indexOf('?');
@@ -198,12 +235,11 @@ app.all('/*', async function (req, res) {
         query = req.originalUrl.slice(queryPos);
     }
 
-    const proto = host.endsWith(':443') ? 'https:' : 'http:';
-    const url = `${proto}//${host}/${path}${query}`;
+    const url = `${targetProto}//${targetHost}${path}${query}`;
     const method = req.method;
 
     const options = {
-        method: 'GET',
+        method: req.method || 'GET',
         headers: { ...req.headers },
     };
 
@@ -219,24 +255,29 @@ app.all('/*', async function (req, res) {
     }
 
     // handle postdata
-    if (req.method !== 'GET') {
-        options.method = req.method;
-        options.body = req.body;
+    if (options.method !== 'GET' && req.rawBody) {
+        options.body = req.rawBody;
     }
 
-    const response = await reverseProxyFetch(url, host, options);
+    const response = await reverseProxyFetch(url, targetHost, options);
     res.set(response.headers);
 
     res.status(response.statusCode)
         .send(response.body);
 
-    // date +'%Y-%m-%d_%H.%M.%S'
-    const date = moment().format("YYYY-MM-DD_HH.mm.ss");
-    const pathSlug = toSlug(path).slice(0, 60);
-    const logName = `${date}_${pathSlug}.log`;
+    if (isLoggingEnabled) {
+        // date +'%Y-%m-%d_%H.%M.%S'
+        const date = moment().format('YYYY-MM-DD_HH.mm.ss');
+        const pathSlug = toSlug(path).slice(0, 60);
+        const logName = `${date}_${pathSlug}.log`;
 
-    fs.promises.writeFile('./logs/' + logName, response.rawOutput)
-        .catch(err => console.error(err));
+        fs.promises.writeFile('./logs/' + logName, response.rawOutput)
+            .catch(err => console.error(err));
+    }
 });
 
-app.listen(port, () => console.log(`Listening at http://${currentHost}/`));
+app.listen(port, () => {
+    console.log(`[+] Listening at http://${currentHost}/`);
+    console.log(`[+] Sending requests to ${targetProto}//${targetHost}`);
+    console.log(`[+] Logging is ${isLoggingEnabled ? 'enabled' : 'disabled'}`);
+});
